@@ -657,6 +657,8 @@ static char *sdp_write_media_attributes(char *buff, int size, AVCodecContext *c,
             if (payload_type >= RTP_PT_PRIVATE)
                 av_strlcatf(buff, size, "a=rtpmap:%d JPEG/90000\r\n",
                                          payload_type);
+            av_strlcatf(buff, size, "a=framesize:%d %u-%u\r\n",
+                    payload_type, c->width, c->height);
             break;
         case AV_CODEC_ID_ADPCM_G722:
             if (payload_type >= RTP_PT_PRIVATE)

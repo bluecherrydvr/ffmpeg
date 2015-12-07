@@ -567,7 +567,7 @@ static void sdp_parse_line(AVFormatContext *s, SDPParseState *s1,
             // let dynamic protocol handlers have a stab at the line.
             get_word(buf1, sizeof(buf1), &p);
             payload_type = atoi(buf1);
-            if (s1->seen_rtpmap) {
+            if (s1->seen_rtpmap || payload_type < RTP_PT_PRIVATE) {
                 parse_fmtp(s, rt, payload_type, buf);
             } else {
                 s1->seen_fmtp = 1;

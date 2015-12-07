@@ -24,9 +24,11 @@
 #include "rtpdec.h"
 #include "rtpdec_formats.h"
 #include "libavutil/intreadwrite.h"
+#include "libavutil/avstring.h"
 #include "libavcodec/jpegtables.h"
 #include "libavcodec/mjpeg.h"
 #include "libavcodec/bytestream.h"
+#include "libavformat/rtpdec_formats.h"
 
 /**
  * RTP/JPEG specific private data.
@@ -35,6 +37,14 @@ struct PayloadContext {
     AVIOContext *frame;         ///< current frame buffer
     uint32_t    timestamp;      ///< current frame timestamp
     int         hdr_size;       ///< size of the current frame header
+    /**
+     * Flag, shows whether we got framesize explicitly from SDP.
+     * If set, override dimensions from RTP header.
+     * Workaround for dimensions larger than 2040 (limitation of RFC 2435).
+     */
+    int         sdp_framesize_set;
+    int         sdp_width;
+    int         sdp_height;
     uint8_t     qtables[128][128];
     uint8_t     qtables_len[128];
 };
@@ -215,7 +225,8 @@ static int jpeg_parse_packet(AVFormatContext *ctx, PayloadContext *jpeg,
                              const uint8_t *buf, int len, uint16_t seq,
                              int flags)
 {
-    uint8_t type, q, width, height;
+    uint8_t type, q;
+    uint32_t width, height;
     const uint8_t *qtables = NULL;
     uint16_t qtable_len;
     uint32_t off;
@@ -230,8 +241,13 @@ static int jpeg_parse_packet(AVFormatContext *ctx, PayloadContext *jpeg,
     off    = AV_RB24(buf + 1);  /* fragment byte offset */
     type   = AV_RB8(buf + 4);   /* id of jpeg decoder params */
     q      = AV_RB8(buf + 5);   /* quantization factor (or table id) */
-    width  = AV_RB8(buf + 6);   /* frame width in 8 pixel blocks */
-    height = AV_RB8(buf + 7);   /* frame height in 8 pixel blocks */
+    if (jpeg->sdp_framesize_set) {
+        width  = FF_CEIL_RSHIFT(jpeg->sdp_width, 3);
+        height = FF_CEIL_RSHIFT(jpeg->sdp_height, 3);
+    } else {
+        width  = AV_RB8(buf + 6);   /* frame width in 8 pixel blocks */
+        height = AV_RB8(buf + 7);   /* frame height in 8 pixel blocks */
+    }
     buf += 8;
     len -= 8;
 
@@ -384,11 +400,35 @@ static int jpeg_parse_packet(AVFormatContext *ctx, PayloadContext *jpeg,
     return AVERROR(EAGAIN);
 }
 
+static int parse_jpeg_sdp_line(AVFormatContext *s, int st_index,
+                               PayloadContext *jpeg_data, const char *line)
+{
+    AVStream *stream;
+    const char *p = line;
+
+    if (st_index < 0)
+        return 0;
+
+    stream = s->streams[st_index];
+
+    if (av_strstart(p, "framesize:", &p)) {
+        ff_h264_parse_framesize(stream->codec, p);
+        av_log(s, AV_LOG_DEBUG, "Got framesize %ux%u from SDP, this will override values from RTP header\n",
+                stream->codec->width, stream->codec->height);
+        jpeg_data->sdp_framesize_set = 1;
+        jpeg_data->sdp_width  = stream->codec->width;
+        jpeg_data->sdp_height = stream->codec->height;
+    }
+
+    return 0;
+}
+
 RTPDynamicProtocolHandler ff_jpeg_dynamic_handler = {
     .enc_name          = "JPEG",
     .codec_type        = AVMEDIA_TYPE_VIDEO,
     .codec_id          = AV_CODEC_ID_MJPEG,
     .priv_data_size    = sizeof(PayloadContext),
+    .parse_sdp_a_line  = parse_jpeg_sdp_line,
     .close             = jpeg_close_context,
     .parse_packet      = jpeg_parse_packet,
     .static_payload_id = 26,
